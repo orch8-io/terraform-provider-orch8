@@ -1,0 +1,2 @@
+# Import by sequence version UUID.
+terraform import orch8_sequence.welcome 0194d2e6-7f44-7e2a-9c3e-1a2b3c4d5e6f
