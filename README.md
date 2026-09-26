@@ -28,6 +28,59 @@ resource "orch8_trigger" "signup" {
 
 Full reference: [`docs/`](docs/) (Terraform Registry layout); examples: [`examples/`](examples/).
 
+## Install
+
+The provider is **not on the Terraform Registry yet**, so `terraform init` cannot download it.
+Until it is, install a build from [GitHub Releases](https://github.com/orch8-io/terraform-provider-orch8/releases)
+(v0.1.0 binaries are unsigned; verify them against the `SHA256SUMS` file).
+
+### Option A: local plugin directory (keeps `terraform init` and the lock file working)
+
+```sh
+VERSION=0.1.0
+OS=$(uname -s | tr '[:upper:]' '[:lower:]')                       # darwin | linux
+ARCH=$(uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/')  # amd64 | arm64
+gh release download "v$VERSION" -R orch8-io/terraform-provider-orch8 \
+  -p "terraform-provider-orch8_${VERSION}_${OS}_${ARCH}.zip" -p "terraform-provider-orch8_${VERSION}_SHA256SUMS"
+shasum -a 256 -c --ignore-missing "terraform-provider-orch8_${VERSION}_SHA256SUMS"
+DEST="$HOME/.terraform.d/plugins/registry.terraform.io/orch8-io/orch8/$VERSION/${OS}_${ARCH}"
+mkdir -p "$DEST" && unzip -o "terraform-provider-orch8_${VERSION}_${OS}_${ARCH}.zip" -d "$DEST"
+```
+
+(Windows: `%APPDATA%\terraform.d\plugins\registry.terraform.io\orch8-io\orch8\0.1.0\windows_amd64\`.)
+Terraform picks up this *implied local mirror* automatically; keep `source = "orch8-io/orch8"` and
+pin `version = "0.1.0"`, then run `terraform init` as usual.
+
+### Option B: `dev_overrides` (skips `terraform init` for this provider)
+
+Unzip the release binary (or `go install` from a checkout) into a directory and point `~/.terraformrc` at it:
+
+```hcl
+provider_installation {
+  dev_overrides {
+    "orch8-io/orch8" = "/absolute/path/to/dir/containing/terraform-provider-orch8_v0.1.0"
+  }
+  direct {}
+}
+```
+
+Terraform prints a warning about the override on every plan; that is expected.
+
+### Once the Registry listing exists
+
+```hcl
+terraform {
+  required_providers {
+    orch8 = {
+      source  = "orch8-io/orch8"
+      version = "~> 0.1"
+    }
+  }
+}
+```
+
+Remove the local plugin directory / `dev_overrides` then, and `terraform init -upgrade`.
+
 ## Resources and data sources
 
 | Terraform type | Engine API | Update model |
@@ -102,19 +155,20 @@ provider_installation {
 }
 ```
 
-## Publishing to the Terraform Registry (manual — not done yet)
+## Releases and the Terraform Registry
 
-1. Create a public GitHub repo **`orch8-io/terraform-provider-orch8`** (the name must be
-   `terraform-provider-<name>`) and push this repository.
+1. Done: the public repo **`orch8-io/terraform-provider-orch8`** exists (the name must be
+   `terraform-provider-<name>`).
 2. Generate a GPG signing key (RSA or DSA; the Registry does not accept ECC):
    `gpg --full-generate-key`, then `gpg --armor --export-secret-keys <FPR>` into the repo
    secret `GPG_PRIVATE_KEY` (+ `PASSPHRASE`).
-3. Add a release workflow using `crazy-max/ghaction-import-gpg` and
-   `goreleaser/goreleaser-action` with `args: release --clean` and
-   `GPG_FINGERPRINT` in env (this repo's `.goreleaser.yml` already produces the
-   zip archives, `SHA256SUMS`, its `.sig`, and `_manifest.json` the Registry needs).
-4. Tag and push: `git tag v0.1.0 && git push origin v0.1.0`.
-5. Sign in to <https://registry.terraform.io> with GitHub, **Publish → Provider**, choose the
+3. `.github/workflows/release.yml` already runs on `v*` tags: with `GPG_PRIVATE_KEY` set it
+   imports the key (`crazy-max/ghaction-import-gpg`) and runs `goreleaser release --clean`,
+   producing the zips, `SHA256SUMS`, its `.sig` and `_manifest.json` the Registry needs.
+   Without the secret it publishes the same files **unsigned** (`--skip=sign`) and labels the
+   release as not Registry-ready. v0.1.0 was released unsigned, so tag a new version
+   (e.g. `v0.1.1`) after adding the key; the Registry needs a signed release.
+4. Sign in to <https://registry.terraform.io> with GitHub, **Publish → Provider**, choose the
    `orch8-io` org and repo, and add the ASCII-armored **public** key under
    *User Settings → Signing Keys* (`gpg --armor --export <FPR>`).
-6. Subsequent tags are picked up automatically by the Registry webhook.
+5. Subsequent tags are picked up automatically by the Registry webhook.

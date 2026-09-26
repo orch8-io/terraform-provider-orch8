@@ -1,0 +1,80 @@
+name: Release
+
+# Tags v* build the provider with GoReleaser in the layout the Terraform
+# Registry expects. With the GPG_PRIVATE_KEY (+ PASSPHRASE) secrets set, the
+# SHA256SUMS file is signed and the release is Registry-ready. Without them,
+# the same zips + SHA256SUMS are published unsigned and the release notes say
+# so (the Registry rejects unsigned releases).
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  goreleaser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Detect signing key
+        id: signing
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+        run: |
+          if [ -n "$GPG_PRIVATE_KEY" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::GPG_PRIVATE_KEY not set; publishing an UNSIGNED release (not Terraform Registry-ready)"
+          fi
+
+      # Signed, Terraform Registry-ready release (standard HashiCorp flow).
+      - name: Import GPG key
+        if: steps.signing.outputs.enabled == 'true'
+        id: import_gpg
+        uses: crazy-max/ghaction-import-gpg@2dc316deee8e90f13e1a351ab510b4d5bc0c82cd # v7.0.0
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.PASSPHRASE }}
+      - name: GoReleaser (signed)
+        if: steps.signing.outputs.enabled == 'true'
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          version: "~> v2"
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
+
+      # Fallback: unsigned binaries + SHA256SUMS on a GitHub Release.
+      - name: GoReleaser (unsigned)
+        if: steps.signing.outputs.enabled != 'true'
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          version: "~> v2"
+          args: release --clean --skip=sign
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Label unsigned release
+        if: steps.signing.outputs.enabled != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          cat > notes.md <<NOTES
+          > **Unsigned build — not Terraform Registry-ready.** The \`SHA256SUMS\` file has no GPG signature
+          > because the repository has no signing key configured yet. Use these binaries through a local
+          > install or \`dev_overrides\` (see the README "Install" section); \`terraform init\` against the
+          > public Registry will not find this version.
+
+          Verify a download: \`sha256sum -c --ignore-missing terraform-provider-orch8_${VERSION}_SHA256SUMS\`
+          NOTES
+          gh release edit "$GITHUB_REF_NAME" --notes-file notes.md
