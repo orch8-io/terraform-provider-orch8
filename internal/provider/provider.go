@@ -104,6 +104,7 @@ func (p *orch8Provider) DataSources(_ context.Context) []func() datasource.DataS
 	return []func() datasource.DataSource{
 		NewSequenceDataSource,
 		NewInstanceDataSource,
+		NewExecutorJoinTokenDataSource,
 	}
 }
 
