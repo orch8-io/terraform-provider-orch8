@@ -95,6 +95,7 @@ Remove the local plugin directory / `dev_overrides` then, and `terraform init -u
 | `orch8_credential` | `POST /credentials`, `GET/PATCH/DELETE /credentials/{id}` | PATCH in place |
 | `data.orch8_sequence` | `GET /sequences/{id}`, `GET /sequences/by-name` | — |
 | `data.orch8_instance` | `GET /instances/{id}` | — |
+| `data.orch8_executor_join_token` | none (computed locally) | — |
 
 Every resource supports `terraform import` (see `examples/resources/*/import.sh`).
 
@@ -115,6 +116,54 @@ Behaviour worth knowing:
 
 Not managed (yet): plugins (`/plugins`), pools, releases/canaries (use `orch8 release`/`orch8 deploy`),
 outbound webhook URLs (static engine config: `ORCH8_WEBHOOK_URLS`).
+
+## Hybrid executors
+
+Run Orch8 executors in your own Kubernetes cluster or AWS account while the
+control plane stays managed. An executor needs one secret, an **executor join
+token** (`o8x1...`, passed as `ORCH8_JOIN_TOKEN`), which carries the control
+endpoint, a dedicated API key, tenant, runtime id, placement labels and region.
+Executors only dial out; nothing needs to reach them.
+
+* **Orch8 Cloud** issues join tokens; pass them to a module as a sensitive variable.
+* **Self-managed keys:** mint the key with `orch8_api_key` and compose the token with
+  `data.orch8_executor_join_token`, which validates it with the engine's rules
+  (https endpoint, UUID runtime id, label format). The token contains the API key,
+  so it lands in state like `orch8_api_key.secret` does: use an encrypted backend.
+
+Two modules deploy `ghcr.io/orch8-io/engine` with `ORCH8_JOIN_TOKEN`; every replica
+joins as `<worker_id_prefix>-<hostname>`:
+
+| Module | Deploys | Token storage |
+|---|---|---|
+| [`examples/modules/hybrid-executor-k8s`](examples/modules/hybrid-executor-k8s) | Namespace (optional), ServiceAccount, Deployment (non-root uid 999, read-only rootfs, `/health/live` + `/health/ready` probes); pods roll when the token changes | Kubernetes Secret via `envFrom` |
+| [`examples/modules/hybrid-executor-ecs`](examples/modules/hybrid-executor-ecs) | Fargate service (cluster optional), egress-only security group, log group, execution role scoped to the one secret; redeploys when the token changes | Secrets Manager, injected by ECS |
+
+```hcl
+resource "orch8_api_key" "executor" {
+  name         = "hybrid-executor-berlin"
+  capabilities = ["worker"]
+}
+
+data "orch8_executor_join_token" "berlin" {
+  endpoint         = "https://control.orch8.example.com"
+  api_key          = orch8_api_key.executor.secret
+  worker_id_prefix = "berlin-k8s"
+  labels           = { site = "berlin", gpu = "a100" } # matched by placement.labels
+  region           = "eu-central-1"                    # matched by placement.region
+}
+
+module "executor" {
+  source     = "github.com/orch8-io/terraform-provider-orch8//examples/modules/hybrid-executor-k8s"
+  join_token = data.orch8_executor_join_token.berlin.token
+  labels     = { "orch8.io/site" = "berlin" } # Kubernetes labels; placement labels live in the token
+  replicas   = 3
+}
+```
+
+A complete root module is in [`examples/hybrid-executor/`](examples/hybrid-executor/).
+Module `labels` tag the Kubernetes/AWS objects; the labels the executor advertises
+for placement are the ones inside the join token.
 
 ## Development
 
